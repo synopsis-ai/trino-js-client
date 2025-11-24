@@ -1343,6 +1343,28 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@synopsis-ai/trino-client@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "@synopsis-ai/trino-client@workspace:."
+  dependencies:
+    "@eslint/js": 9.25.1
+    "@types/eslint__js": ^8.42.3
+    "@types/jest": ^30.0.0
+    "@types/node": ^24.2.0
+    axios: 1.13.2
+    eslint: 9.39.1
+    eslint-plugin-jest: ^29.0.1
+    jest: ^30.0.5
+    jiti: ^2.4.0
+    prettier: ^3.0.0
+    ts-jest: ^29.2.5
+    ts-node: ^10.9.2
+    typedoc: ^0.28.3
+    typescript: ^5.6.3
+    typescript-eslint: ^8.14.0
+  languageName: unknown
+  linkType: soft
+
 "@tsconfig/node10@npm:^1.0.7":
   version: 1.0.11
   resolution: "@tsconfig/node10@npm:1.0.11"
@@ -5271,28 +5293,6 @@ __metadata:
   checksum: f76fa01b3d5be85db6a2a143e24df9f60dd047d151062d0ba3df62953f2f697b16fe5dad9b0ac6191c7efc7b1d9dcaa4b768174b7b29da89d4428e64bc0a20ed
   languageName: node
   linkType: hard
-
-"trino-client@workspace:.":
-  version: 0.0.0-use.local
-  resolution: "trino-client@workspace:."
-  dependencies:
-    "@eslint/js": 9.25.1
-    "@types/eslint__js": ^8.42.3
-    "@types/jest": ^30.0.0
-    "@types/node": ^24.2.0
-    axios: 1.13.2
-    eslint: 9.39.1
-    eslint-plugin-jest: ^29.0.1
-    jest: ^30.0.5
-    jiti: ^2.4.0
-    prettier: ^3.0.0
-    ts-jest: ^29.2.5
-    ts-node: ^10.9.2
-    typedoc: ^0.28.3
-    typescript: ^5.6.3
-    typescript-eslint: ^8.14.0
-  languageName: unknown
-  linkType: soft
 
 "ts-api-utils@npm:^2.1.0":
   version: 2.1.0

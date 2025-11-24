@@ -1,6 +1,6 @@
 {
   "version": "0.2.9",
-  "name": "trino-client",
+  "name": "@synopsis-ai/trino-client",
   "description": "Trino client library",
   "author": {
     "name": "Trino Javascript contributors",
