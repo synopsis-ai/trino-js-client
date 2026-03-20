@@ -74,6 +74,21 @@ describe('public api validation', () => {
     ).rejects.toThrow('fn');
   });
 
+  test('Iterator.map does not call fn on terminal result', async () => {
+    const fn = jest.fn((v: number) => v * 2);
+    const iter = new Iterator(createAsyncIterator(42));
+    const mapped = iter.map(fn);
+
+    const results: number[] = [];
+    for await (const value of mapped) {
+      results.push(value);
+    }
+
+    expect(results).toEqual([84]);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith(42);
+  });
+
   test('QueryIterator rejects invalid constructor inputs', () => {
     expect(() => new QueryIterator({} as never, {id: 'query_1'})).toThrow(
       'client'

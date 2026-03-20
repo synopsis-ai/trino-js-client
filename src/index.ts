@@ -81,7 +81,7 @@ const authSchema = z
       candidate.username.length === 0
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ['username'],
         message: 'Expected a non-empty string',
       });
@@ -92,7 +92,7 @@ const authSchema = z
       typeof candidate.password !== 'string'
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ['password'],
         message: 'Expected a string',
       });
@@ -497,9 +497,12 @@ export class Iterator<T> implements AsyncIterableIterator<T> {
       [Symbol.asyncIterator]: () => asyncIterableIterator,
       async next() {
         return that.next().then(result => {
+          if (result.done) {
+            return <IteratorResult<B>>{done: true, value: undefined as never};
+          }
           return <IteratorResult<B>>{
             value: fn(result.value),
-            done: result.done,
+            done: false,
           };
         });
       },
@@ -571,9 +574,13 @@ export class QueryIterator implements AsyncIterableIterator<QueryResult> {
       return Promise.resolve({value: this.queryResult, done: true});
     }
 
-    this.queryResult = await this.client.request<QueryResult>({
-      url: this.queryResult.nextUri,
-    });
+    this.queryResult = sanitizeInput(
+      queryResultSchema,
+      await this.client.request<QueryResult>({
+        url: this.queryResult.nextUri,
+      }),
+      'queryResult'
+    );
 
     const data = this.queryResult.data ?? [];
     if (data.length === 0) {
