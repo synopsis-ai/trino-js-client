@@ -1,6 +1,7 @@
 import axios, {AxiosRequestConfig, RawAxiosRequestHeaders} from 'axios';
 import * as https from 'https';
 import * as tls from 'tls';
+import {z} from 'zod';
 
 const DEFAULT_SERVER = 'http://localhost:8080';
 const DEFAULT_SOURCE = 'trino-js-client';
@@ -30,9 +31,162 @@ export interface Auth {
   readonly type: AuthType;
 }
 
+type BasicAuthFields = {
+  readonly username: string;
+  readonly password?: string;
+};
+
+const nonEmptyStringSchema = z.string().min(1, 'Expected a non-empty string');
+const stringRecordSchema = z.record(nonEmptyStringSchema, z.string());
+const functionSchema = z.custom<(...args: never[]) => unknown>(
+  value => typeof value === 'function',
+  {message: 'Expected a function'}
+);
+const asyncIteratorSchema = z.custom<AsyncIterableIterator<unknown>>(
+  value => {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+
+    const candidate = value as Partial<AsyncIterableIterator<unknown>>;
+    return (
+      typeof candidate.next === 'function' &&
+      typeof candidate[Symbol.asyncIterator] === 'function'
+    );
+  },
+  {message: 'Expected an async iterator'}
+);
+const sslSchema = z
+  .object({
+    rejectUnauthorized: z.boolean().optional(),
+  })
+  .catchall(z.unknown());
+const authSchema = z
+  .object({
+    type: nonEmptyStringSchema,
+  })
+  .passthrough()
+  .superRefine((auth, ctx) => {
+    if (auth.type !== 'basic') {
+      return;
+    }
+
+    const candidate = auth as {
+      username?: unknown;
+      password?: unknown;
+    };
+
+    if (
+      typeof candidate.username !== 'string' ||
+      candidate.username.length === 0
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ['username'],
+        message: 'Expected a non-empty string',
+      });
+    }
+
+    if (
+      candidate.password !== undefined &&
+      typeof candidate.password !== 'string'
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ['password'],
+        message: 'Expected a string',
+      });
+    }
+  });
+const basicAuthConstructorSchema = z.object({
+  username: nonEmptyStringSchema,
+  password: z.string().optional(),
+});
+const connectionOptionsSchema = z.object({
+  server: nonEmptyStringSchema.optional(),
+  source: nonEmptyStringSchema.optional(),
+  catalog: nonEmptyStringSchema.optional(),
+  schema: nonEmptyStringSchema.optional(),
+  auth: authSchema.optional(),
+  session: stringRecordSchema.optional(),
+  extraCredential: stringRecordSchema.optional(),
+  ssl: sslSchema.optional(),
+  extraHeaders: stringRecordSchema.optional(),
+});
+const queryObjectSchema = z.object({
+  query: nonEmptyStringSchema,
+  catalog: nonEmptyStringSchema.optional(),
+  schema: nonEmptyStringSchema.optional(),
+  user: nonEmptyStringSchema.optional(),
+  session: stringRecordSchema.optional(),
+  extraCredential: stringRecordSchema.optional(),
+  extraHeaders: stringRecordSchema.optional(),
+});
+const queryResultSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    nextUri: nonEmptyStringSchema.optional(),
+    data: z.array(z.array(z.unknown())).optional(),
+  })
+  .passthrough();
+
+const formatIssuePath = (path: PropertyKey[]): string => {
+  return path.reduce<string>((formattedPath, segment) => {
+    if (typeof segment === 'number') {
+      return `${formattedPath}[${segment}]`;
+    }
+
+    const part = String(segment);
+    return formattedPath ? `${formattedPath}.${part}` : part;
+  }, '');
+};
+
+const sanitizeInput = <T>(
+  schema: z.ZodType<T>,
+  value: unknown,
+  label: string
+): T => {
+  const result = schema.safeParse(value);
+
+  if (result.success) {
+    return result.data;
+  }
+
+  const issues = result.error.issues
+    .map(issue => {
+      const path = formatIssuePath(issue.path);
+      return path
+        ? `${label}.${path}: ${issue.message}`
+        : `${label}: ${issue.message}`;
+    })
+    .join('; ');
+
+  throw new TypeError(issues);
+};
+
+const sanitizeQueryInput = (query: Query | string): Query | string => {
+  if (typeof query === 'string') {
+    return sanitizeInput(nonEmptyStringSchema, query, 'query');
+  }
+
+  return sanitizeInput(queryObjectSchema, query, 'query');
+};
+
 export class BasicAuth implements Auth {
   readonly type: AuthType = 'basic';
-  constructor(readonly username: string, readonly password?: string) {}
+  readonly username: string;
+  readonly password?: string;
+
+  constructor(username: string, password?: string) {
+    const sanitized = sanitizeInput(
+      basicAuthConstructorSchema,
+      {username, password},
+      'BasicAuth'
+    );
+
+    this.username = sanitized.username;
+    this.password = sanitized.password;
+  }
 }
 
 export type Session = {[key: string]: string};
@@ -47,7 +201,7 @@ const encodeAsString = (obj: {[key: string]: string}) => {
 
 export type RequestHeaders = {
   [key: string]: string;
-}
+};
 
 export type SecureContextOptions = tls.SecureContextOptions & {
   readonly rejectUnauthorized?: boolean;
@@ -153,6 +307,10 @@ export type Query = {
   extraHeaders?: RequestHeaders;
 };
 
+const isBasicAuth = (auth: Auth): auth is Auth & BasicAuthFields => {
+  return auth.type === 'basic';
+};
+
 /**
  * It takes a Headers object and returns a new object with the same keys, but only the values that are
  * truthy
@@ -196,8 +354,8 @@ class Client {
       ...(options.extraHeaders ?? {}),
     };
 
-    if (options.auth && options.auth.type === 'basic') {
-      const basic: BasicAuth = <BasicAuth>options.auth;
+    if (options.auth && isBasicAuth(options.auth)) {
+      const basic = options.auth;
       clientConfig.auth = {
         username: basic.username,
         password: basic.password ?? '',
@@ -270,7 +428,7 @@ class Client {
       [TRINO_EXTRA_CREDENTIAL_HEADER]: encodeAsString(
         req.extraCredential ?? {}
       ),
-    ...(req.extraHeaders ?? {})
+      ...(req.extraHeaders ?? {}),
     };
     const requestConfig = {
       method: 'POST',
@@ -304,8 +462,20 @@ class Client {
   }
 }
 
+const clientSchema = z.custom<Client>(value => value instanceof Client, {
+  message: 'Expected a Client instance',
+});
+
 export class Iterator<T> implements AsyncIterableIterator<T> {
-  constructor(private readonly iter: AsyncIterableIterator<T>) {}
+  private readonly iter: AsyncIterableIterator<T>;
+
+  constructor(iter: AsyncIterableIterator<T>) {
+    this.iter = sanitizeInput(
+      asyncIteratorSchema,
+      iter,
+      'iter'
+    ) as AsyncIterableIterator<T>;
+  }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<T> {
     return this;
@@ -320,14 +490,19 @@ export class Iterator<T> implements AsyncIterableIterator<T> {
    * @param fn A function that accepts a QueryResult. map calls the fn function one time for each QueryResult.
    */
   map<B>(fn: (t: T) => B): Iterator<B> {
+    sanitizeInput(functionSchema, fn, 'fn');
+
     const that: AsyncIterableIterator<T> = this.iter;
     const asyncIterableIterator: AsyncIterableIterator<B> = {
       [Symbol.asyncIterator]: () => asyncIterableIterator,
       async next() {
         return that.next().then(result => {
+          if (result.done) {
+            return <IteratorResult<B>>{done: true, value: undefined as never};
+          }
           return <IteratorResult<B>>{
             value: fn(result.value),
-            done: result.done,
+            done: false,
           };
         });
       },
@@ -340,6 +515,8 @@ export class Iterator<T> implements AsyncIterableIterator<T> {
    * @param fn A function that accepts a QueryResult. forEach calls the fn function one time for each QueryResult.
    */
   async forEach(fn: (value: T) => void): Promise<void> {
+    sanitizeInput(functionSchema, fn, 'fn');
+
     for await (const value of this) {
       fn(value);
     }
@@ -352,6 +529,8 @@ export class Iterator<T> implements AsyncIterableIterator<T> {
    * @param fn A function that accepts a QueryResult and accumulator, and returns an accumulator.
    */
   async fold<B>(acc: B, fn: (value: T, acc: B) => B): Promise<B> {
+    sanitizeInput(functionSchema, fn, 'fn');
+
     await this.forEach(value => (acc = fn(value, acc)));
     return acc;
   }
@@ -361,10 +540,17 @@ export class Iterator<T> implements AsyncIterableIterator<T> {
  * Iterator for the query result data.
  */
 export class QueryIterator implements AsyncIterableIterator<QueryResult> {
-  constructor(
-    private readonly client: Client,
-    private queryResult: QueryResult
-  ) {}
+  private readonly client: Client;
+  private queryResult: QueryResult;
+
+  constructor(client: Client, queryResult: QueryResult) {
+    this.client = sanitizeInput(clientSchema, client, 'client');
+    this.queryResult = sanitizeInput(
+      queryResultSchema,
+      queryResult,
+      'queryResult'
+    );
+  }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<QueryResult> {
     return this;
@@ -388,9 +574,13 @@ export class QueryIterator implements AsyncIterableIterator<QueryResult> {
       return Promise.resolve({value: this.queryResult, done: true});
     }
 
-    this.queryResult = await this.client.request<QueryResult>({
-      url: this.queryResult.nextUri,
-    });
+    this.queryResult = sanitizeInput(
+      queryResultSchema,
+      await this.client.request<QueryResult>({
+        url: this.queryResult.nextUri,
+      }),
+      'queryResult'
+    );
 
     const data = this.queryResult.data ?? [];
     if (data.length === 0) {
@@ -410,7 +600,13 @@ export class Trino {
   private constructor(private readonly client: Client) {}
 
   static create(options: ConnectionOptions): Trino {
-    return new Trino(Client.create(options));
+    const sanitizedOptions = sanitizeInput(
+      connectionOptionsSchema,
+      options,
+      'options'
+    );
+
+    return new Trino(Client.create(sanitizedOptions));
   }
 
   /**
@@ -419,7 +615,8 @@ export class Trino {
    * @returns A QueryIterator object.
    */
   async query(query: Query | string): Promise<Iterator<QueryResult>> {
-    return this.client.query(query);
+    const sanitizedQuery = sanitizeQueryInput(query);
+    return this.client.query(sanitizedQuery);
   }
 
   /**
@@ -428,7 +625,12 @@ export class Trino {
    * @returns The query info
    */
   async queryInfo(queryId: string): Promise<QueryInfo> {
-    return this.client.queryInfo(queryId);
+    const sanitizedQueryId = sanitizeInput(
+      nonEmptyStringSchema,
+      queryId,
+      'queryId'
+    );
+    return this.client.queryInfo(sanitizedQueryId);
   }
 
   /**
@@ -437,6 +639,11 @@ export class Trino {
    * @returns The result of the query.
    */
   async cancel(queryId: string): Promise<QueryResult> {
-    return this.client.cancel(queryId);
+    const sanitizedQueryId = sanitizeInput(
+      nonEmptyStringSchema,
+      queryId,
+      'queryId'
+    );
+    return this.client.cancel(sanitizedQueryId);
   }
 }
